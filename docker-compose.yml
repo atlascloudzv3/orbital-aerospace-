@@ -12,10 +12,16 @@ services:
       - DB_FILE=/data/data.db
       - NODE_ENV=production
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
   redis:
     image: redis:7
     restart: unless-stopped
@@ -23,6 +29,11 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   redisdata:

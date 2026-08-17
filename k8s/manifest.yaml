@@ -1,0 +1,120 @@
+# Kubernetes manifests for ORBITAL (basic)
+
+# NOTE: Replace image placeholders with the image you build & push (e.g. ghcr.io/you/orbital-aerospace:latest)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orbital
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orbital-app
+  namespace: orbital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orbital
+  template:
+    metadata:
+      labels:
+        app: orbital
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/your-username/orbital-aerospace:latest # <-- replace
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: "production"
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: orbital-secrets
+                  key: session_secret
+            - name: REDIS_URL
+              value: "redis://orbital-redis:6379"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      # If you use persistent DB, mount PVC here
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orbital-svc
+  namespace: orbital
+spec:
+  selector:
+    app: orbital
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: ClusterIP
+---
+# Redis deployment (single instance) — for production use managed Redis or a clustered setup
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orbital-redis
+  namespace: orbital
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orbital-redis
+  template:
+    metadata:
+      labels:
+        app: orbital-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          ports:
+            - containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orbital-redis
+  namespace: orbital
+spec:
+  selector:
+    app: orbital-redis
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
+  type: ClusterIP
+---
+# Secret for session secret (create with kubectl -n orbital create secret generic orbital-secrets --from-literal=session_secret="$(openssl rand -base64 32)")
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orbital-secrets
+  namespace: orbital
+type: Opaque
+stringData:
+  session_secret: "REPLACE_ME_WITH_BASE64_OR_PLAIN"
