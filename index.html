@@ -59,7 +59,7 @@
 
         <div class="section">
           <h4 style="margin:0 0 8px 0">Accounts</h4>
-          <div class="muted small">Local-only demo accounts. Passwords are stored in browser localStorage (not secure).</div>
+          <div class="muted small">Accounts are managed by the server. Session cookie is used for authentication.</div>
           <div style="margin-top:8px">
             <button id="btnLogout" class="hidden" style="background:#ff6b6b">Sign out</button>
           </div>
@@ -67,7 +67,7 @@
 
         <div class="section">
           <h4 style="margin:0 0 8px 0">Help</h4>
-          <div class="muted small">This site implements client-side-only accounts and posts using localStorage for demo purposes. For production, add a server and database.</div>
+          <div class="muted small">This site implements a minimal server-backed auth and posts API. For production, secure sessions and a persistent session store are needed.</div>
         </div>
       </aside>
 
@@ -93,7 +93,7 @@
         <button id="tabSignUp" style="flex:1">Sign Up</button>
       </div>
       <div id="signInPanel">
-        <label for="signinUser">Username or email</label>
+        <label for="signinUser">Username</label>
         <input id="signinUser" />
         <label for="signinPass">Password</label>
         <input id="signinPass" type="password" />
@@ -121,40 +121,26 @@
   </div>
 
   <script>
-    // Simple client-side account & posts demo using localStorage.
-    // Data shapes:
-    // users: { username: { passwordHash, email, createdAt } }
-    // currentUser: username
-    // posts: [{id, author, title, body, createdAt}]
+    // Client that uses server API endpoints (cookie-based session).
+    // Endpoints used:
+    // GET  /api/current -> { user }
+    // POST /api/login   -> { username, password }
+    // POST /api/signup  -> { username, password, email }
+    // POST /api/logout
+    // GET  /api/posts   -> { posts }
+    // POST /api/posts   -> { title, body }
 
-    const LS_USERS = 'orbital_users_v1'
-    const LS_CURRENT = 'orbital_current_user_v1'
-    const LS_POSTS = 'orbital_posts_v1'
-
-    // Utility: load/save
-    function loadJSON(key, fallback) {
-      try { return JSON.parse(localStorage.getItem(key)) ?? fallback }
-      catch(e){ return fallback }
+    // Utility fetch wrapper
+    async function apiJSON(method, path, body){
+      const opts = { method, headers: { 'Accept': 'application/json' }, credentials: 'same-origin' }
+      if(body){ opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body) }
+      const res = await fetch(path, opts)
+      const text = await res.text()
+      let data = null
+      try{ data = text ? JSON.parse(text) : null }catch(e){ data = { error: 'invalid_json' } }
+      if(!res.ok){ throw data || { error: 'network_error' } }
+      return data
     }
-    function saveJSON(key, val){ localStorage.setItem(key, JSON.stringify(val)) }
-
-    // Simple hashing using Web Crypto (SHA-256) if available, else btoa fallback
-    async function hashPassword(pw){
-      if(window.crypto && crypto.subtle){
-        const enc = new TextEncoder().encode(pw)
-        const hash = await crypto.subtle.digest('SHA-256', enc)
-        return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('')
-      }
-      return btoa(pw)
-    }
-
-    // Data accessors
-    function getUsers(){ return loadJSON(LS_USERS, {}) }
-    function setUsers(u){ saveJSON(LS_USERS, u) }
-    function getCurrent(){ return localStorage.getItem(LS_CURRENT) }
-    function setCurrent(u){ if(u) localStorage.setItem(LS_CURRENT, u); else localStorage.removeItem(LS_CURRENT) }
-    function getPosts(){ return loadJSON(LS_POSTS, []) }
-    function setPosts(p){ saveJSON(LS_POSTS, p) }
 
     // UI refs
     const authModal = document.getElementById('authModal')
@@ -190,17 +176,14 @@
       const email = document.getElementById('signupEmail').value.trim()
       const msg = document.getElementById('signupMsg')
       msg.textContent = ''
-      if(!username || !password){ msg.textContent = 'Username and password are required'; msg.className='error'; return }
-      const users = getUsers()
-      if(users[username]){ msg.textContent = 'Username already taken'; msg.className='error'; return }
-      const pwHash = await hashPassword(password)
-      users[username] = { passwordHash: pwHash, email: email||null, createdAt: new Date().toISOString() }
-      setUsers(users)
-      setCurrent(username)
-      msg.textContent = 'Account created and signed in'
-      msg.className = 'small'
-      hideAuthModal()
-      renderAuthState()
+      try{
+        if(!username || !password){ msg.textContent = 'Username and password are required'; msg.className='error'; return }
+        const res = await apiJSON('POST', '/api/signup', { username, password, email })
+        msg.textContent = 'Account created and signed in'
+        msg.className = 'small'
+        hideAuthModal()
+        await refreshAuthAndPosts()
+      }catch(err){ msg.textContent = (err && err.error) ? err.error : 'Signup failed'; msg.className='error' }
     })
 
     // Signin
@@ -209,51 +192,46 @@
       const password = document.getElementById('signinPass').value
       const msg = document.getElementById('signinMsg')
       msg.textContent = ''
-      if(!username || !password){ msg.textContent = 'Enter username and password'; msg.className='error'; return }
-      const users = getUsers()
-      const user = users[username]
-      if(!user){ msg.textContent = 'User not found'; msg.className='error'; return }
-      const pwHash = await hashPassword(password)
-      if(pwHash !== user.passwordHash){ msg.textContent = 'Incorrect password'; msg.className='error'; return }
-      setCurrent(username)
-      msg.textContent = 'Signed in'
-      msg.className = 'small'
-      hideAuthModal()
-      renderAuthState()
+      try{
+        if(!username || !password){ msg.textContent = 'Enter username and password'; msg.className='error'; return }
+        const res = await apiJSON('POST', '/api/login', { username, password })
+        msg.textContent = 'Signed in'
+        msg.className = 'small'
+        hideAuthModal()
+        await refreshAuthAndPosts()
+      }catch(err){ msg.textContent = (err && err.error) ? err.error : 'Sign in failed'; msg.className='error' }
     })
 
     document.getElementById('btnCancelSignin').addEventListener('click', hideAuthModal)
     document.getElementById('btnCancelSignup').addEventListener('click', hideAuthModal)
 
-    btnLogout.addEventListener('click', ()=>{ setCurrent(null); renderAuthState() })
+    btnLogout.addEventListener('click', async ()=>{
+      try{ await apiJSON('POST', '/api/logout'); await refreshAuthAndPosts() }catch(e){ console.error(e); await refreshAuthAndPosts() }
+    })
 
     // Posting
-    document.getElementById('btnPost').addEventListener('click', ()=>{
+    document.getElementById('btnPost').addEventListener('click', async ()=>{
       const title = document.getElementById('postTitle').value.trim()
       const body = document.getElementById('postBody').value.trim()
       const msg = document.getElementById('postMsg')
       msg.textContent = ''
-      const author = getCurrent()
-      if(!author){ msg.textContent = 'You must be signed in to post'; msg.className='error'; return }
-      if(!title){ msg.textContent = 'Title required'; msg.className='error'; return }
-      const posts = getPosts()
-      const post = { id: 'p_'+Date.now(), author, title, body, createdAt: new Date().toISOString() }
-      posts.unshift(post)
-      setPosts(posts)
-      document.getElementById('postTitle').value = ''
-      document.getElementById('postBody').value = ''
-      msg.textContent = 'Posted'
-      msg.className = 'small'
-      renderPosts()
+      try{
+        if(!title){ msg.textContent = 'Title required'; msg.className='error'; return }
+        const res = await apiJSON('POST', '/api/posts', { title, body })
+        document.getElementById('postTitle').value = ''
+        document.getElementById('postBody').value = ''
+        msg.textContent = 'Posted'
+        msg.className = 'small'
+        await loadPosts()
+      }catch(err){ msg.textContent = (err && err.error) ? err.error : 'Post failed'; msg.className='error' }
     })
 
     document.getElementById('btnClear').addEventListener('click', ()=>{ document.getElementById('postTitle').value=''; document.getElementById('postBody').value=''; })
 
     // Render functions
-    function renderAuthState(){
-      const u = getCurrent()
-      if(u){
-        currentUserEl.textContent = 'Signed in as ' + u
+    function renderAuthState(user){
+      if(user){
+        currentUserEl.textContent = 'Signed in as ' + user.username
         btnLogout.classList.remove('hidden')
         postForm.classList.remove('hidden')
         authRequired.classList.add('hidden')
@@ -263,43 +241,43 @@
         postForm.classList.add('hidden')
         authRequired.classList.remove('hidden')
       }
-      renderPosts()
     }
 
-    function renderPosts(){
-      const posts = getPosts()
-      postsEl.innerHTML = ''
-      postsCount.textContent = posts.length
-      if(!posts.length){ postsEl.innerHTML = '<div class="muted small">No posts yet — be the first to share!</div>'; return }
-      for(const p of posts){
-        const div = document.createElement('div'); div.className='post'
-        const meta = document.createElement('div'); meta.className='meta'
-        const left = document.createElement('div'); left.textContent = p.title
-        const right = document.createElement('div'); right.className='small'; right.textContent = `${p.author} · ${new Date(p.createdAt).toLocaleString()}`
-        meta.appendChild(left); meta.appendChild(right)
-        const body = document.createElement('div'); body.innerHTML = '<div style="white-space:pre-wrap;margin-top:6px;color:#cfe7ff">'+escapeHtml(p.body||'')+'</div>'
-        div.appendChild(meta); div.appendChild(body)
-        postsEl.appendChild(div)
+    function escapeHtml(s){ if(!s) return ''; return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
+
+    async function loadPosts(){
+      try{
+        const res = await apiJSON('GET', '/api/posts')
+        const posts = res.posts || []
+        postsEl.innerHTML = ''
+        postsCount.textContent = posts.length
+        if(!posts.length){ postsEl.innerHTML = '<div class="muted small">No posts yet — be the first to share!</div>'; return }
+        for(const p of posts){
+          const div = document.createElement('div'); div.className='post'
+          const meta = document.createElement('div'); meta.className='meta'
+          const left = document.createElement('div'); left.textContent = p.title
+          const right = document.createElement('div'); right.className='small'; right.textContent = `${p.author} · ${new Date(p.created_at).toLocaleString()}`
+          meta.appendChild(left); meta.appendChild(right)
+          const body = document.createElement('div'); body.innerHTML = '<div style="white-space:pre-wrap;margin-top:6px;color:#cfe7ff">'+escapeHtml(p.body||'')+'</div>'
+          div.appendChild(meta); div.appendChild(body)
+          postsEl.appendChild(div)
+        }
+      }catch(err){
+        postsEl.innerHTML = '<div class="error small">Failed to load posts</div>'
       }
     }
 
-    function escapeHtml(s){ return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
+    async function refreshAuthAndPosts(){
+      try{
+        const res = await apiJSON('GET','/api/current')
+        renderAuthState(res.user)
+      }catch(e){ renderAuthState(null) }
+      await loadPosts()
+    }
 
-    // Init sample data if none
+    // Init
     (function init(){
-      if(!localStorage.getItem(LS_USERS)){
-        // create a demo account: demo/demo
-        hashPassword('demo').then(h=>{
-          const u = { demo: { passwordHash: h, email: 'demo@example.com', createdAt: new Date().toISOString() } }
-          setUsers(u)
-        })
-      }
-      if(!localStorage.getItem(LS_POSTS)){
-        setPosts([
-          { id: 'p_init', author: 'demo', title: 'Welcome to ORBITAL', body: 'This is a client-side demo of user accounts and posting. Create an account to post.\n\nFor production you should add a server and a database to persist data securely.', createdAt: new Date().toISOString() }
-        ])
-      }
-      renderAuthState()
+      refreshAuthAndPosts()
     })()
 
     // Close modal on backdrop click
