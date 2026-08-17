@@ -7,6 +7,7 @@ const Database = require('better-sqlite3')
 const DB_FILE = process.env.DB_FILE || 'data.db'
 const PORT = process.env.PORT || 3000
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev_secret_change_me'
+const REDIS_URL = process.env.REDIS_URL || null
 
 const db = new Database(DB_FILE)
 
@@ -40,12 +41,31 @@ if(!demo){
 const app = express()
 app.use(express.json())
 
-app.use(session({
+// Session store setup (Redis optional)
+let sessionMiddlewareOptions = {
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true }
-}))
+  cookie: { httpOnly: true, sameSite: 'lax' }
+}
+
+if (REDIS_URL) {
+  // Use Redis-backed session store
+  const { createClient } = require('redis')
+  const RedisStore = require('connect-redis')(session)
+  const redisClient = createClient({ url: REDIS_URL })
+  redisClient.on('error', (err) => console.error('Redis Client Error', err))
+  ;(async () => { try { await redisClient.connect(); console.log('Connected to Redis') } catch(e){ console.error('Failed to connect to Redis', e) } })()
+
+  sessionMiddlewareOptions.store = new RedisStore({ client: redisClient, prefix: 'sess:' })
+} else {
+  console.warn('REDIS_URL not set — using in-memory session store (not for production)')
+}
+
+// Use session middleware
+// In production, ensure cookie.secure = true and serve behind HTTPS
+if (process.env.NODE_ENV === 'production') sessionMiddlewareOptions.cookie.secure = true
+app.use(session(sessionMiddlewareOptions))
 
 // Serve static site (index.html is at repo root)
 app.use(express.static(path.join(__dirname)))
